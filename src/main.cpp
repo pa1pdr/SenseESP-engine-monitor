@@ -7,6 +7,9 @@
 
 #include "sensesp_app.h"
 #include "sensesp_app_builder.h"
+#include "sensesp_minimal_app.h"
+#include "sensesp_minimal_app_builder.h"
+
 #include "sensesp_onewire/onewire_temperature.h"
 #include "sensesp/signalk/signalk_output.h"
 #include "sensesp/sensors/sensor.h"
@@ -18,6 +21,7 @@
 #include "sensori/activity_timer.h"
 #include "sensori/difference.h"
 
+#include "sensesp_minimal_app_builder.h"
 
 // 1-Wire data pin on SH-ESP32
 #define ONEWIRE_PIN 4
@@ -77,7 +81,7 @@ double coolant_temperature = N2kDoubleNA;
 double alternator_volts = N2kDoubleNA;
 double engine_runtime = N2kDoubleNA;
 const String engine = "main";
-
+DigitalInputCounter *rpminput;
 
 
 /**
@@ -110,19 +114,59 @@ void SendEngineTemperatures()
 ReactESP app;
 
 
+void cpu0_task (void *params) {
+
+     ReactESP cpu0_app;
+     debugD ("Task initiated on %d",  xPortGetCoreID());
+     SensESPMinimalAppBuilder minibuilder;
+     SensESPMinimalApp* sensesp_mini_app = (&minibuilder)
+                    // Set a custom hostname for the app.
+                    ->get_app();
+
+     debugD ("minimal app established");
+
+      const float rpm_multiplier = 60.0 / 13.23;  // in Hz
+      uint8_t rpm_pin = 35;
+                 // SignalK wants it in Hz, so divide by 60..
+        rpminput = new DigitalInputCounter(rpm_pin, INPUT_PULLUP, RISING, 200U);  // fast changing parameter
+                 // Send the RPM's to the display
+        rpminput
+                     ->connect_to(new Frequency(rpm_multiplier))
+                     ->connect_to(new LambdaConsumer<float>([](float rpm) {debugD( "RPM %f", rpm); }));
+
+     sensesp_mini_app->start();
+     debugD ("minimal app started");
+
+
+     for (;;) {
+        cpu0_app.tick();  
+        delay (200U);
+     }
+
+}
+
+
 void setup () {
 // Some initialization boilerplate when in debug mode...
 #ifndef SERIAL_DEBUG_DISABLED
                  SetupSerialDebug(115200);
 #endif
-
+/*
+xTaskCreatePinnedToCore(
+                    cpu0_task,   // Function to implement the task
+                    "getRPM", // Name of the task 
+                    10000,      // Stack size in words 
+                    NULL,       // Task input parameter 
+                    0,          // Priority of the task 
+                    NULL,       // Task handle. 
+                    0);  // Core where the task should run 
+*/
 // Create the global SensESPApp() object
-    // Construct the global SensESPApp() object
+  
   SensESPAppBuilder builder;
   sensesp_app = (&builder)
                     // Set a custom hostname for the app.
                     ->set_hostname(engine + " Enginehealth")
-                    ->set_wifi("Zevecote","1023bm_cafebabe_")
                     ->enable_ota ("mypassword")
                     // Optionally, hard-code the WiFi and Signal K server
                     // settings. This is normally not needed.
@@ -201,8 +245,6 @@ void setup () {
                                     10.                        // timeout, in seconds
                      );
     
-  //                   ->connect_to(new Frequency(rpm_multiplier/60.0, "/sensors/engine_rpm/calibrate"))
-  //                   ->connect_to(new SKOutputFloat ("propulsion.main.revolutions", new SKMetadata("Hz", "rpm")));
                     
                  auto engine_revs_metadata =
                      new SKMetadata("Hz",                       // units
@@ -279,7 +321,7 @@ void setup () {
                  const float rpm_multiplier = 60.0 / 13.23;  // in Hz
                  uint8_t rpm_pin = 35;
                  // SignalK wants it in Hz, so divide by 60..
-                 auto *dic = new DigitalInputCounter(rpm_pin, INPUT_PULLUP, RISING, 2000U);
+                 auto *dic = new DigitalInputCounter(rpm_pin, INPUT_PULLUP, RISING, 200U);  // fast changing parameter
                  dic
                      ->connect_to(new Frequency(rpm_multiplier/60.0, "/" + engine + "_engine_rpm/calibrate"))
                      ->connect_to(new SKOutputFloat ("propulsion." + engine + ".revolutions", engine_revs_metadata));
@@ -292,7 +334,7 @@ void setup () {
                                                             PrintValue(6, "RPM", rpm); }));
 
                  // Send the RPM's to the N2K network
-                 // note N2K expects Engine Speed (16-bit unsigned integer) This field indicates the rotational speed of the engine in units of 1/4 RPM.
+                 // note N2K expects Engine Speed to be the rotational speed of the engine in units of 1/4 RPM.
                  dic
                      ->connect_to(new Frequency(rpm_multiplier))
                      ->connect_to(new LambdaConsumer<float>([](float rpm)
@@ -300,7 +342,7 @@ void setup () {
                                                                 tN2kMsg N2kMsg;
                                                                 SetN2kEngineParamRapid(N2kMsg,
                                                                                        1, // SID
-                                                                                       rpm);
+                                                                                       rpm * 4.0);
 
                                                             }));
 
