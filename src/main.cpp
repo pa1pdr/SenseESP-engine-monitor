@@ -7,14 +7,17 @@
 
 #include "sensesp_app.h"
 #include "sensesp_app_builder.h"
-#include "sensors/onewire_temperature.h"
-#include "signalk/signalk_output.h"
-#include "sensors/sensor.h"
-#include "sensors/digital_input.h"
-#include "sensors/activity_timer.h"
-#include "transforms/frequency.h"
-#include "transforms/linear.h"
-#include "transforms/transform.h"
+#include "sensesp_onewire/onewire_temperature.h"
+#include "sensesp/signalk/signalk_output.h"
+#include "sensesp/sensors/sensor.h"
+#include "sensesp/sensors/digital_input.h"
+#include "sensesp/transforms/frequency.h"
+#include "sensesp/transforms/linear.h"
+#include "sensesp/transforms/transform.h"
+
+#include "sensori/activity_timer.h"
+#include "sensori/difference.h"
+
 
 // 1-Wire data pin on SH-ESP32
 #define ONEWIRE_PIN 4
@@ -37,6 +40,7 @@
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
+using namespace sensesp;
 
 
 // define temperature display units
@@ -71,11 +75,8 @@ void PrintTemperature(int row, String title, float temperature)
 double oil_temperature = N2kDoubleNA;
 double coolant_temperature = N2kDoubleNA;
 double alternator_volts = N2kDoubleNA;
-double engine_runtime;
-unsigned long last_millis = 0;
-unsigned long delta;
-float engine_revs;
-ActivityTimer *engineRuntimeSensor = NULL; 
+double engine_runtime = N2kDoubleNA;
+const String engine = "main";
 
 
 
@@ -106,62 +107,68 @@ void SendEngineTemperatures()
     nmea2000->SendMsg(N2kMsg);
 }
 
-ReactESP app([]()
-             {
+ReactESP app;
+
+
+void setup () {
 // Some initialization boilerplate when in debug mode...
 #ifndef SERIAL_DEBUG_DISABLED
                  SetupSerialDebug(115200);
 #endif
 
-                 SensESPAppBuilder builder;
+// Create the global SensESPApp() object
+    // Construct the global SensESPApp() object
+  SensESPAppBuilder builder;
+  sensesp_app = (&builder)
+                    // Set a custom hostname for the app.
+                    ->set_hostname(engine + " Enginehealth")
+                    ->set_wifi("Zevecote","1023bm_cafebabe_")
+                    ->enable_ota ("mypassword")
+                    // Optionally, hard-code the WiFi and Signal K server
+                    // settings. This is normally not needed.
+                      ->get_app();
 
-                 sensesp_app = new SensESPApp("enginehealth", "Zevecote",
-                                              "1023bm_cafebabe_", "192.168.1.133", 3000);
 
-                 //  sensesp_app = builder.set_hostname("temperatures")
-                 //                   ->set_standard_sensors(NONE)
-                 //                    ->get_app();
-
-                 DallasTemperatureSensors *dts = new DallasTemperatureSensors(ONEWIRE_PIN);
+                   DallasTemperatureSensors *dts = new DallasTemperatureSensors(ONEWIRE_PIN);
 
                  // define three 1-Wire temperature sensors that update every 1000 ms
                  // and have specific web UI configuration paths
 
                  auto main_engine_oil_temperature =
-                     new OneWireTemperature(dts, 1000, "/mainEngineOilTemp/oneWire");
+                     new OneWireTemperature(dts, 1000, "/" + engine + "EngineOilTemp/oneWire");
                  auto main_engine_coolant_temperature =
-                     new OneWireTemperature(dts, 1000, "/mainEngineCoolantTemp/oneWire");
+                     new OneWireTemperature(dts, 1000, "/" + engine + "EngineCoolantTemp/oneWire");
                  auto main_engine_exhaust_temperature =
-                     new OneWireTemperature(dts, 1000, "/mainEngineWetExhaustTemp/oneWire");
+                     new OneWireTemperature(dts, 1000, "/" + engine + "EngineWetExhaustTemp/oneWire");
                  auto main_alternator_temperature =
-                     new OneWireTemperature(dts, 1000, "/mainAlternatorTemp/oneWire");
+                     new OneWireTemperature(dts, 1000, "/" + engine + "AlternatorTemp/oneWire");
 
                  // define metadata for sensors
 
                  auto main_engine_oil_temperature_metadata =
                      new SKMetadata("K",                      // units
-                                    "Engine Oil Temperature", // display name
+                                    engine + " Oil Temperature", // display name
                                     "Engine Oil Temperature", // description
                                     "Oil Temp",               // short name
                                     10.                       // timeout, in seconds
                      );
                  auto main_engine_coolant_temperature_metadata =
                      new SKMetadata("K",                          // units
-                                    "Engine Coolant Temperature", // display name
+                                    engine + " Coolant Temperature", // display name
                                     "Engine Coolant Temperature", // description
                                     "Coolant Temp",               // short name
                                     10.                           // timeout, in seconds
                      );
                  auto main_engine_temperature_metadata =
                      new SKMetadata("K",                  // units
-                                    "Engine Temperature", // display name
+                                    engine + " Temperature", // display name
                                     "Engine Temperature", // description
                                     "Engine Temp",        // short name
                                     10.                   // timeout, in seconds
                      );
                  auto main_engine_exhaust_temperature_metadata =
                      new SKMetadata("K",                       // units
-                                    "Wet Exhaust Temperature", // display name
+                                    engine + " Exhaust Temperature", // display name
                                     "Wet Exhaust Temperature", // description
                                     "Exhaust Temp",            // short name
                                     10.                        // timeout, in seconds
@@ -169,7 +176,7 @@ ReactESP app([]()
 
                  auto main_alternator_temperature_metadata =
                      new SKMetadata("K",                      // units
-                                    "Alternator Temperature", // display name
+                                    engine + " Alternator Temperature", // display name
                                     "Alternator Temperature", // description
                                     "Alternator Temp",        // short name
                                     10.                       // timeout, in seconds
@@ -177,7 +184,7 @@ ReactESP app([]()
 
                  auto main_alternator_voltage_metadata =
                      new SKMetadata("K",                         // units
-                                    "Alternator Voltage",        // display name
+                                    engine + " Alternator Voltage",        // display name
                                     "Alternator Output Voltage", // description
                                     "Alternator V",              // short name
                                     10.                          // timeout, in seconds
@@ -186,39 +193,57 @@ ReactESP app([]()
                     // Propagate /vessels/<RegExp>/propulsion/<RegExp>/runTime
                     // Units: s (Second)
                     // Description: Total running time for engine (Engine Hours in seconds)
-                 auto main_engine_runtime_metadata =
+                 auto engine_runtime_metadata =
                      new SKMetadata("s",                       // units
-                                    "Engine Runtime", // display name
-                                    "Total running time main engine", // description
-                                    "Engine running",            // short name
+                                    engine + " Engine Runtime", // display name
+                                    "Total hrs running", // description
+                                    "Engine hrs",            // short name
                                     10.                        // timeout, in seconds
                      );
     
+  //                   ->connect_to(new Frequency(rpm_multiplier/60.0, "/sensors/engine_rpm/calibrate"))
+  //                   ->connect_to(new SKOutputFloat ("propulsion.main.revolutions", new SKMetadata("Hz", "rpm")));
+                    
+                 auto engine_revs_metadata =
+                     new SKMetadata("Hz",                       // units
+                                    engine + " Engine speed",   // display name
+                                    "Engine revs",              // description
+                                    "Speed",                    // short name
+                                    10.                        // timeout, in seconds
+                     );
 
                  // connect the sensors to Signal K output paths
                  // Oil temp
                  main_engine_oil_temperature->connect_to(new SKOutput<float>(
-                     "propulsion.main.oilTemperature", "/mainEngineOilTemp/skPath",
-                     main_engine_oil_temperature_metadata));
+                     "propulsion." + engine + ".oilTemperature", main_engine_oil_temperature_metadata));
                  // Coolant temp
                  main_engine_coolant_temperature->connect_to(new SKOutput<float>(
-                     "propulsion.main.coolantTemperature", "/mainEngineCoolantTemp/skPath",
-                     main_engine_coolant_temperature_metadata));
+                     "propulsion." + engine + ".coolantTemperature", main_engine_coolant_temperature_metadata));
                  // transmit coolant temperature as overall engine temperature as well
                  main_engine_coolant_temperature->connect_to(new SKOutput<float>(
-                     "propulsion.main.temperature", "/mainEngineTemp/skPath",
-                     main_engine_temperature_metadata));
+                     "propulsion." + engine + ".temperature", main_engine_temperature_metadata));
                  // propulsion.*.ExhaustTemperature is a standard path: /vessels/<RegExp>/propulsion/<RegExp>/exhaustTemperature
                  main_engine_exhaust_temperature->connect_to(
-                     new SKOutput<float>("propulsion.main.exhaustTemperature",
-                                         "/mainEngineExhaustTemp/skPath",
-                                         main_engine_exhaust_temperature_metadata));
+                     new SKOutput<float>("propulsion." + engine +".exhaustTemperature", main_engine_exhaust_temperature_metadata));
 
                  // send the alternator temperature /vessels/<RegExp>/electrical/alternators/<RegExp>/temperature
-                 main_alternator_temperature->connect_to(new SKOutput<float>(
-                     "electrical.main.alternators.temperature", "/mainAlternatorTemp/skPath",
-                     main_alternator_temperature_metadata));
+                 main_alternator_temperature->connect_to(
+                     new SKOutput<float>("electrical." + engine + ".alternators.temperature", main_alternator_temperature_metadata));
 
+
+                 // Add display updaters for temperature values
+                 main_engine_oil_temperature->connect_to(new LambdaConsumer<float>(
+                     [](float temperature)
+                     { PrintTemperature(1, "Oil", temperature); }));
+                 main_engine_coolant_temperature->connect_to(new LambdaConsumer<float>(
+                     [](float temperature)
+                     { PrintTemperature(2, "Coolant", temperature); }));
+                 main_engine_exhaust_temperature->connect_to(new LambdaConsumer<float>(
+                     [](float temperature)
+                     { PrintTemperature(3, "Exhaust", temperature); }));
+                 main_alternator_temperature->connect_to(new LambdaConsumer<float>(
+                     [](float temperature)
+                     { PrintTemperature(4, "Alternator", temperature); }));
                 
 
                  // initialize the display
@@ -254,19 +279,20 @@ ReactESP app([]()
                  const float rpm_multiplier = 60.0 / 13.23;  // in Hz
                  uint8_t rpm_pin = 35;
                  // SignalK wants it in Hz, so divide by 60..
-                 auto *dic = new DigitalInputCounter(rpm_pin, INPUT_PULLUP, RISING, 500U);
+                 auto *dic = new DigitalInputCounter(rpm_pin, INPUT_PULLUP, RISING, 2000U);
                  dic
-                     ->connect_to(new Frequency(rpm_multiplier/60.0, "/sensors/engine_rpm/calibrate"))
-                     ->connect_to(new SKOutputNumber("propulsion.main.revolutions", new SKMetadata("Hz", "rpm")));
+                     ->connect_to(new Frequency(rpm_multiplier/60.0, "/" + engine + "_engine_rpm/calibrate"))
+                     ->connect_to(new SKOutputFloat ("propulsion." + engine + ".revolutions", engine_revs_metadata));
 
                  // Send the RPM's to the display
                  dic
                      ->connect_to(new Frequency(rpm_multiplier))
                      ->connect_to(new LambdaConsumer<float>([](float rpm)
-                                                            { engine_revs = rpm;
+                                                            { 
                                                             PrintValue(6, "RPM", rpm); }));
 
                  // Send the RPM's to the N2K network
+                 // note N2K expects Engine Speed (16-bit unsigned integer) This field indicates the rotational speed of the engine in units of 1/4 RPM.
                  dic
                      ->connect_to(new Frequency(rpm_multiplier))
                      ->connect_to(new LambdaConsumer<float>([](float rpm)
@@ -278,45 +304,20 @@ ReactESP app([]()
 
                                                             }));
 
+                auto *main_engine_timer = new ActivityTimer(1.0,"/" + engine + "_engine_hrs/begin_value");
 
-                 // Engine hour meter: we update every second using the cofigurable offset
-                 engineRuntimeSensor = new ActivityTimer (&engine_runtime, 1000U,"/mainEngineRuntime/configure");
+                dic
+                  ->connect_to (main_engine_timer)
+                  ->connect_to (new LambdaConsumer<float>([](float running_hrs)
+                                                            { 
+                                                                engine_runtime = running_hrs;
+                                                                PrintValue(7, "Hours", engine_runtime);
+                                                            }));
 
-                 app.onRepeat(100, []()
-                              { if (engine_revs >= 0)       //CHANGE ME TO > !!
-                                    engineRuntimeSensor->start();
-                                else
-                                     engineRuntimeSensor->stop();
-                              });
-                 
-                 engineRuntimeSensor->connect_to(new SKOutputNumber("propulsion.main.runTime", new SKMetadata("s", "runtime")));                 
+                main_engine_timer
+                      ->connect_to (new Linear (3600.0,0.0,""))
+                      ->connect_to (new SKOutputFloat("propulsion." + engine + ".runTime", engine_runtime_metadata));                 
                 
-                 
-                 engineRuntimeSensor->connect_to (new LambdaConsumer<float>([](float enginesecs) {   
-                        float runtime = enginesecs / 3600.0;
-                        if (engineRuntimeSensor->isActive()) {
-                            PrintValue (7,"Engine hrs",runtime);
-                        } else {
-                            PrintValue (7,"engine hrs",runtime);  // make a small visual distinction
-                        }
-                 }));
-
-
-
-                 // Add display updaters for temperature values
-                 main_engine_oil_temperature->connect_to(new LambdaConsumer<float>(
-                     [](float temperature)
-                     { PrintTemperature(1, "Oil", temperature); }));
-                 main_engine_coolant_temperature->connect_to(new LambdaConsumer<float>(
-                     [](float temperature)
-                     { PrintTemperature(2, "Coolant", temperature); }));
-                 main_engine_exhaust_temperature->connect_to(new LambdaConsumer<float>(
-                     [](float temperature)
-                     { PrintTemperature(3, "Exhaust", temperature); }));
-                 main_alternator_temperature->connect_to(new LambdaConsumer<float>(
-                     [](float temperature)
-                     { PrintTemperature(4, "Alternator", temperature); }));
-
                  // initialize the NMEA 2000 subsystem
 
                  // instantiate the NMEA2000 object
@@ -392,5 +393,12 @@ ReactESP app([]()
                                                    nmea2000->SendMsg(N2kMsg);
                                                }));
 
-                 sensesp_app->enable();
-             });
+                sensesp_app->start();
+             }
+
+
+
+             void loop() {
+                 app.tick();
+             }
+
