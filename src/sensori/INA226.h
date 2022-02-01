@@ -22,6 +22,8 @@
 #define INA226_h
 
 
+
+
 #define INA226_ADDRESS              (0x40)
 
 #define INA226_REG_CONFIG           (0x00)
@@ -93,10 +95,9 @@ typedef enum
     INA226_MODE_SHUNT_BUS_CONT  = 0b111,
 } ina226_mode_t;
 
-class INA226
-{
+class INA226 {
 public:
-    
+    INA226 (TwoWire *i2c);
     bool begin(uint8_t address = INA226_ADDRESS);
     bool configure(ina226_averages_t avg = INA226_AVERAGES_1, ina226_busConvTime_t busConvTime = INA226_BUS_CONV_TIME_1100US, ina226_shuntConvTime_t shuntConvTime = INA226_SHUNT_CONV_TIME_1100US, ina226_mode_t mode = INA226_MODE_SHUNT_BUS_CONT);
     bool calibrate(float rShuntValue = 0.1, float iMaxExcepted = 2);
@@ -134,7 +135,7 @@ public:
     float getMaxPower(void);
     
 private:
-    
+    TwoWire *wire;
     int8_t inaAddress;
     float currentLSB, powerLSB;
     float vShuntMax, vBusMax, rShunt;

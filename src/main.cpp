@@ -20,6 +20,8 @@
 
 #include "sensori/activity_timer.h"
 #include "sensori/difference.h"
+#include "sensori/ina226value.h"
+#include "sensori/INA226.h"
 
 #include "sensesp_minimal_app_builder.h"
 
@@ -37,8 +39,6 @@
 // IO Pins we'd like to use
 //
 #define BOOT_BUTTON 0  // GPIO 0
-#define ADC_VOLTAGE 36 // this pin will be the Alternator voltage
-
 
 // OLED display width and height, in pixels
 #define SCREEN_WIDTH 128
@@ -56,6 +56,55 @@ Adafruit_SSD1306 *display;
 
 tNMEA2000 *nmea2000;
 
+bool show_display = true;
+
+
+void scan_i2c(TwoWire *i2c) {
+
+ // Serial.begin(115200); //  LdB this is different to main.cpp
+  debugI("I2C Scanner");
+
+  // LdB Set up SCA and SCL lines
+  //  int SDA = 4;	// Wemos D1 Mini Pro
+  //  int SCL = 5;  // Wemos D1 Mini Pro
+  // Wire.begin(SDA, SCL);	// 	Connect the scanner to the connect GPIO pins. 
+
+  // LdB not sure what this does except for just scan 5 times?
+  // for(uint8_t n = 0; n < 5; n++) {
+
+    uint8_t error, address;
+    int nDevices = 0;
+
+    debugI("Scanning...");
+
+    for(address = 1; address < 127; address++ ) {
+    // The i2c_scanner uses the return value of the Write.endTransmisstion
+    //  to see if a device did acknowledge to the address.
+      i2c->beginTransmission(address);
+      error = i2c->endTransmission();
+
+      if (error == 0) {
+        debugI("I2C device found at address 0x");
+        if (address<16) 
+          debugI("0");
+        debugI("%x",address);  
+        nDevices++;
+      }
+      else if (error==4) {
+        debugI("Unknow error at address 0x");
+        if (address<16) 
+          debugI("0");
+        debugI("%x", address);
+      }    
+  }
+  
+    debugI("Finished scanning. ");
+    if (nDevices == 0)
+      debugI("No I2C devices found");
+
+}
+
+
 /// Clear a text row on an Adafruit graphics display
 void ClearRow(int row) { display->fillRect(0, 8 * row, SCREEN_WIDTH, 8, 0); }
 
@@ -66,8 +115,10 @@ float KelvinToFahrenheit(float temp) { return (temp - 273.15) * 9. / 5. + 32.; }
 void PrintValue(int row, String title, float value)
 {
     ClearRow(row);
-    display->setCursor(0, 8 * row);
-    display->printf("%s: %.1f", title.c_str(), value);
+    if (show_display) {
+      display->setCursor(0, 8 * row);
+      display->printf("%s: %.1f", title.c_str(), value);
+      }
     display->display();
 }
 
@@ -113,55 +164,12 @@ void SendEngineTemperatures()
 
 ReactESP app;
 
-
-void cpu0_task (void *params) {
-
-     ReactESP cpu0_app;
-     debugD ("Task initiated on %d",  xPortGetCoreID());
-     SensESPMinimalAppBuilder minibuilder;
-     SensESPMinimalApp* sensesp_mini_app = (&minibuilder)
-                    // Set a custom hostname for the app.
-                    ->get_app();
-
-     debugD ("minimal app established");
-
-      const float rpm_multiplier = 60.0 / 13.23;  // in Hz
-      uint8_t rpm_pin = 35;
-                 // SignalK wants it in Hz, so divide by 60..
-        rpminput = new DigitalInputCounter(rpm_pin, INPUT_PULLUP, RISING, 200U);  // fast changing parameter
-                 // Send the RPM's to the display
-        rpminput
-                     ->connect_to(new Frequency(rpm_multiplier))
-                     ->connect_to(new LambdaConsumer<float>([](float rpm) {debugD( "RPM %f", rpm); }));
-
-     sensesp_mini_app->start();
-     debugD ("minimal app started");
-
-
-     for (;;) {
-        cpu0_app.tick();  
-        delay (200U);
-     }
-
-}
-
-
 void setup () {
 // Some initialization boilerplate when in debug mode...
 #ifndef SERIAL_DEBUG_DISABLED
                  SetupSerialDebug(115200);
 #endif
-/*
-xTaskCreatePinnedToCore(
-                    cpu0_task,   // Function to implement the task
-                    "getRPM", // Name of the task 
-                    10000,      // Stack size in words 
-                    NULL,       // Task input parameter 
-                    0,          // Priority of the task 
-                    NULL,       // Task handle. 
-                    0);  // Core where the task should run 
-*/
-// Create the global SensESPApp() object
+
   
   SensESPAppBuilder builder;
   sensesp_app = (&builder)
@@ -227,13 +235,20 @@ xTaskCreatePinnedToCore(
                      );
 
                  auto main_alternator_voltage_metadata =
-                     new SKMetadata("K",                         // units
+                     new SKMetadata("V",                         // units
                                     engine + " Alternator Voltage",        // display name
                                     "Alternator Output Voltage", // description
                                     "Alternator V",              // short name
                                     10.                          // timeout, in seconds
                      );
 
+                auto main_alternator_current_metadata =
+                     new SKMetadata("A",                         // units
+                                    engine + " Alternator Current",        // display name
+                                    "Alternator Output Current", // description
+                                    "Alternator A",              // short name
+                                    10.                          // timeout, in seconds
+                     );
                     // Propagate /vessels/<RegExp>/propulsion/<RegExp>/runTime
                     // Units: s (Second)
                     // Description: Total running time for engine (Engine Hours in seconds)
@@ -288,9 +303,11 @@ xTaskCreatePinnedToCore(
                      { PrintTemperature(4, "Alternator", temperature); }));
                 
 
+                
                  // initialize the display
                  i2c = new TwoWire(0);
                  i2c->begin(SDA_PIN, SCL_PIN);
+             
                  display = new Adafruit_SSD1306(SCREEN_WIDTH, SCREEN_HEIGHT, i2c, -1);
                  if (!display->begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
                      Serial.println(F("SSD1306 allocation failed"));
@@ -300,9 +317,28 @@ xTaskCreatePinnedToCore(
                  display->clearDisplay();
                  display->setTextSize(1);
                  display->setTextColor(SSD1306_WHITE);
-                 display->setCursor(0, 0);
-                 display->printf("Host: %s\n", sensesp_app->get_hostname().c_str());
 
+                // put the hostname on display
+                app.onRepeat (500U,[](){
+                    if (show_display) {
+                      display->setCursor(0, 0);
+                      display->printf("%s", sensesp_app->get_hostname().c_str());
+                    }
+                });
+
+                // if the BOOT button is pressed, activate the display for 10 seconds
+                auto *dispButton = new DigitalInputChange (BOOT_BUTTON, PULLDOWN,CHANGE,"");
+                dispButton->connect_to(new LambdaConsumer<bool>([](bool btnstate)
+                                                            {
+                                                                if (!btnstate) {
+                                                                    show_display = true;
+                                                                    app.onDelay (10U*1000U,[](){
+                                                                        show_display = false;
+                                                                        display->clearDisplay();
+                                                                    });
+
+                                                                }
+                                                              }));
 
 
                  // RPM Measurement down here, we expect a RPM proportional signal (the generator
@@ -345,23 +381,52 @@ xTaskCreatePinnedToCore(
                                                                                        rpm * 4.0);
 
                                                             }));
-
+                // Update the hour meter for this engine and add to the startvalue
                 auto *main_engine_timer = new ActivityTimer(1.0,"/" + engine + "_engine_hrs/begin_value");
 
                 dic
                   ->connect_to (main_engine_timer)
                   ->connect_to (new LambdaConsumer<float>([](float running_hrs)
                                                             { 
-                                                                engine_runtime = running_hrs;
-                                                                PrintValue(7, "Hours", engine_runtime);
+                                                              engine_runtime = running_hrs;
+                                                              PrintValue(7, "Hours", engine_runtime);
                                                             }));
 
                 main_engine_timer
                       ->connect_to (new Linear (3600.0,0.0,""))
                       ->connect_to (new SKOutputFloat("propulsion." + engine + ".runTime", engine_runtime_metadata));                 
                 
-                 // initialize the NMEA 2000 subsystem
+                // start the INA266 current & voltage measurements for the alternator
 
+                auto *alternatorINA = new INA226 (i2c);
+                alternatorINA->begin(0x40);  // uses the default address of 0x40
+ 
+                // configure with defaults
+    
+                alternatorINA->configure(INA226_AVERAGES_1, INA226_BUS_CONV_TIME_1100US, INA226_SHUNT_CONV_TIME_1100US, INA226_MODE_SHUNT_BUS_CONT);  // uses the default values
+                alternatorINA->calibrate(0.01, 4);  // uses the default values
+                // Now the INA226 is ready for reading, which will be done by the INA226value class.
+                auto altVmeter = new INA226value (alternatorINA,bus_voltage,1000U,"/" + engine + "_Alternator/Electrics/Voltage");
+                debugD ("we have a voltmeter");
+
+   
+                altVmeter->connect_to (new SKOutputFloat("electrical.alternators." + engine + ".voltage", main_alternator_voltage_metadata));
+
+                altVmeter->connect_to (new LambdaConsumer<float>([](float altV)
+                                                           {   debugD ("Alternator volts: %f V",altV);
+                                                               PrintValue (2,"AltV",altV); }));
+                auto altAmmeter = new INA226value (alternatorINA,current,1000U,"/" + engine + "_Alternator/Electrics/Current");
+                debugD ("we have an Ammeter");
+
+   
+                altAmmeter->connect_to (new SKOutputFloat("electrical.alternators." + engine + ".current", main_alternator_current_metadata));
+
+                altAmmeter->connect_to (new LambdaConsumer<float>([](float altA)
+                                                           {   debugD ("Alternator amps: %f A",altA);
+                                                               PrintValue (3,"AltA",altA); }));
+
+ 
+                 // initialize the NMEA 2000 subsystem
                  // instantiate the NMEA2000 object
                  nmea2000 = new tNMEA2000_esp32(CAN_TX_PIN, CAN_RX_PIN);
 
@@ -443,4 +508,5 @@ xTaskCreatePinnedToCore(
              void loop() {
                  app.tick();
              }
+    
 
